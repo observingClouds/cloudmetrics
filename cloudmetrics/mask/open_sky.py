@@ -92,7 +92,13 @@ def open_sky(mask, summary_measure="max", periodic_domain=False, debug=False):
                 a_os = (e - w) * (s - n)
                 a_os_avg += a_os
 
-                a_os_max = max(a_os_max, a_os)
+                if a_os > a_os_max:
+                    a_os_max = a_os
+                    osc = [i, j]
+                    nmax, smax, emax, wmax = n, s, e, w
+
+    if debug:
+        _debug_plot(mask=mask, osc=osc, wmax=wmax, nmax=nmax, emax=emax, smax=smax)
 
     if summary_measure == "max":
         os_max = a_os_max / mask.size
