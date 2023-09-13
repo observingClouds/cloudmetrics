@@ -2,10 +2,8 @@
 # -*- coding: utf-8 -*-
 
 import numpy as np
-from numba import jit, prange
 
 
-@jit(nopython=True, parallel=True)
 def open_sky(mask, summary_measure="max", periodic_domain=False, debug=False):
     """
     Compute "open sky" metric proposed by Antonissen (2018) for a single
@@ -50,7 +48,7 @@ def open_sky(mask, summary_measure="max", periodic_domain=False, debug=False):
     a_os_max = 0
     a_os_avg = 0
 
-    for i in prange(npx_rows):
+    for i in range(npx_rows):
         for j in range(npx_cols):
             if mask[i, j] != 1:
 
