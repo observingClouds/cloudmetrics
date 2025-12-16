@@ -6,6 +6,7 @@ Methods for computing iorg organisation index
 
 import matplotlib.pyplot as plt
 import numpy as np
+from scipy.spatial import cKDTree
 
 from ...utils import find_nearest_neighbors
 from ._object_properties import _get_objects_property
@@ -105,6 +106,7 @@ def iorg(
             nn_window=nn_window,
             domain_shape=domain_shape,
             dist_bins=dist_bins,
+            periodic_domain=periodic_domain,
             **reference_dist_kwargs,
         )
     else:
@@ -120,6 +122,7 @@ def _compute_inhibition_nearest_neighbour_distribution(
     nn_window,
     domain_shape,
     dist_bins,
+    periodic_domain=False,
     max_iterations=100,
     debug=False,
     random_seed=None,
@@ -144,32 +147,50 @@ def _compute_inhibition_nearest_neighbour_distribution(
                      function for nearest-neighbour distances of placed object
     """
     rng = np.random.default_rng(random_seed)
-    # Attempt to randomly place all circles in scene without ovelapping
-    i = 0
-    placed_circles = []
+    # Attempt to randomly place all circles in scene without overlapping
+    placed_positions = []
+    placed_radii = []
+    placed_circles = [] if debug else None
+    tree = None
     place_count = 0
+    i = 0
     while i < len(object_radii) and place_count < max_iterations:
-        new = CloudCircle(object_radii[i], domain_shape, rng)
-        placeable = True
-
-        # If the circles overlap -> Place again
-        if _check_circle_overlap(new, placed_circles):
-            placeable = False
-            place_count += 1
-
-        if placeable:
-            placed_circles.append(new)
+        x = rng.integers(0, domain_shape[1] - 1)
+        y = rng.integers(0, domain_shape[0] - 1)
+        pos = np.array([x, y])
+        r = object_radii[i]
+        overlap = False
+        if tree is not None:
+            max_r = max(placed_radii) if placed_radii else 0
+            candidates = tree.query_ball_point(pos, r + max_r)
+            for idx in candidates:
+                px, py = placed_positions[idx]
+                pr = placed_radii[idx]
+                if periodic_domain:
+                    dx = min(abs(px - x), abs(px - x + domain_shape[1]), abs(px - x - domain_shape[1]))
+                    dy = min(abs(py - y), abs(py - y + domain_shape[0]), abs(py - y - domain_shape[0]))
+                else:
+                    dx = abs(px - x)
+                    dy = abs(py - y)
+                if dx**2 + dy**2 <= (r + pr)**2:
+                    overlap = True
+                    break
+        if not overlap:
+            placed_positions.append([x, y])
+            placed_radii.append(r)
+            if debug:
+                placed_circles.append(CloudCircle(r, domain_shape, x=x, y=y))
+            tree = cKDTree(placed_positions, boxsize=domain_shape if periodic_domain else None)
             i += 1
             place_count = 0
+        else:
+            place_count += 1
 
     if place_count == max_iterations:
         raise Exception("Unable to place circles in this image")
 
     # Gather positions in array
-    pos_rand = np.zeros((len(placed_circles), 2))
-    for i, placed_circle in enumerate(placed_circles):
-        pos_rand[i, 0] = placed_circle.x
-        pos_rand[i, 1] = placed_circle.y
+    pos_rand = np.array(placed_positions)
 
     # If field has open bcs, do not compute nn distances using
     # periodic bcs
@@ -283,9 +304,15 @@ def _check_circle_overlap(new, placed_circles):
 
 
 class CloudCircle:
-    def __init__(self, r, sh, rng):
-        self.x = rng.integers(0, sh[1] - 1)
-        self.y = rng.integers(0, sh[0] - 1)
+    def __init__(self, r, sh, x=None, y=None, rng=None):
+        if x is None:
+            self.x = rng.integers(0, sh[1] - 1)
+        else:
+            self.x = x
+        if y is None:
+            self.y = rng.integers(0, sh[0] - 1)
+        else:
+            self.y = y
 
         self.xp = self.x + sh[1]
         self.yp = self.y + sh[0]
