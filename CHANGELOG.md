@@ -18,6 +18,12 @@
   giving identical values but a >10x faster evaluation of these object
   properties which are used by the length-scale, `iorg`, `cop`, `scai` and
   `num_objects` metrics. Hauke Schulz (@observingClouds)
+- compute the image moments of `cloudmetrics.mask.orientation` from the
+  projections of the mask onto the x and y axes instead of from full-size
+  index and product arrays, giving identical values for boolean and integer
+  masks (and float64 accumulation for float masks) while being ~10x faster and
+  no longer allocating several mask-sized temporary arrays per call.
+  Hauke Schulz (@observingClouds)
 - update pre-commit hooks and related github action to latest versions
   [\#86](https://github.com/cloudsci/cloudmetrics/pull/86) Hauke Schulz
   (@observingClouds)
