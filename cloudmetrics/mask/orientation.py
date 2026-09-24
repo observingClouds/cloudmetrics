@@ -1,21 +1,33 @@
 import numpy as np
 
 
-def _raw_moment(data, i_order, j_order):
-    nrows, ncols = data.shape
-    y_indices, x_indicies = np.mgrid[:nrows, :ncols]
-    return (data * x_indicies**i_order * y_indices**j_order).sum()
-
-
 def _moments_cov(data):
-    data_sum = data.sum()
-    m10 = _raw_moment(data, 1, 0)
-    m01 = _raw_moment(data, 0, 1)
+    # The raw image moments sum(data * x**i * y**j) are computed from the
+    # projections of `data` onto the x and y axes (and a single matrix-vector
+    # product for the mixed moment m11) rather than from full-size index and
+    # product arrays. This gives the same values without allocating several
+    # temporary arrays of the size of `data` per moment. The sums are
+    # accumulated in the type `data` is promoted to by the integer indices,
+    # i.e. with integer arithmetic for boolean/integer masks and in float64 for
+    # float masks.
+    data = np.asarray(data)
+    nrows, ncols = data.shape
+    x_indices = np.arange(ncols)
+    y_indices = np.arange(nrows)
+    acc_dtype = np.result_type(data.dtype, x_indices.dtype)
+    col_sums = data.sum(axis=0, dtype=acc_dtype)
+    row_sums = data.sum(axis=1, dtype=acc_dtype)
+    data_sum = col_sums.sum()
+    m10 = x_indices @ col_sums
+    m01 = y_indices @ row_sums
+    m11 = y_indices @ (data @ x_indices)
+    m20 = x_indices**2 @ col_sums
+    m02 = y_indices**2 @ row_sums
     x_centroid = m10 / data_sum
     y_centroid = m01 / data_sum
-    u11 = (_raw_moment(data, 1, 1) - x_centroid * m01) / data_sum
-    u20 = (_raw_moment(data, 2, 0) - x_centroid * m10) / data_sum
-    u02 = (_raw_moment(data, 0, 2) - y_centroid * m01) / data_sum
+    u11 = (m11 - x_centroid * m01) / data_sum
+    u20 = (m20 - x_centroid * m10) / data_sum
+    u02 = (m02 - y_centroid * m01) / data_sum
     cov = np.array([[u20, u11], [u11, u02]])
     return cov
 
