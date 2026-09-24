@@ -45,8 +45,8 @@ env:
   OMP_NUM_THREADS: 1
   NUMBA_NUM_THREADS: 1
   PYTHONHASHSEED: 0
-  BASE_DIR: ${{ runner.temp }}/cloudmetrics-base
-  RESULTS_DIR: ${{ runner.temp }}/benchmark-results
+  # BASE_DIR, HEAD_WORKTREE and RESULTS_DIR (below $RUNNER_TEMP) are set in the
+  # first step: the `runner` context is not available in workflow-level `env`
   # `inputs.*` is only set for workflow_dispatch, on pull_request the base of
   # the PR is used
   BASE_REF: ${{ github.event.pull_request.base.sha || inputs.base_ref || 'master' }}
@@ -73,6 +73,14 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Set up working directories
+        run: |
+          {
+            echo "BASE_DIR=${RUNNER_TEMP}/cloudmetrics-base"
+            echo "HEAD_WORKTREE=${RUNNER_TEMP}/cloudmetrics-head"
+            echo "RESULTS_DIR=${RUNNER_TEMP}/benchmark-results"
+          } >> "$GITHUB_ENV"
+
       - name: Resolve base and head commits
         id: refs
         # user-controlled values (branch names, inputs) are passed through the
@@ -82,7 +90,6 @@ jobs:
           PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           HEAD_REF: ${{ inputs.head_ref }}
-          HEAD_WORKTREE: ${{ runner.temp }}/cloudmetrics-head
         run: |
           # resolve a branch name, tag or sha to a commit sha (fetching it if
           # it is not available locally), preferring the branch at `origin`
