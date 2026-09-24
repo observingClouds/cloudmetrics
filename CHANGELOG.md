@@ -4,6 +4,12 @@
 
 *maintenance*
 
+- vectorised the circle-overlap test in the random circle placement of the
+  inhibition nearest-neighbour reference distribution of `iorg`
+  (`reference_dist="inhibition_nn"`), replacing a pure-python loop over all
+  placed circles. Results are bit-identical for a given `random_seed`, the
+  placement is ~10x faster for ~650 objects and ~35x faster for ~1600 objects.
+  Hauke Schulz (@observingClouds)
 - update pre-commit hooks and related github action to latest versions
   [\#86](https://github.com/cloudsci/cloudmetrics/pull/86) Hauke Schulz
   (@observingClouds)
