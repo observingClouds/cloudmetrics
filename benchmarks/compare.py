@@ -17,7 +17,8 @@ exist in the head run are reported for information only.
 
 A Markdown report (comparison table, verdict and the raw per-benchmark
 statistics of both runs) is written to ``--summary`` and the comparison table
-is also printed to stdout.
+is also printed to stdout. Additional lines for the report header (e.g. the
+numpy version used) can be given with ``--note`` (repeatable).
 """
 
 import argparse
@@ -223,6 +224,7 @@ def build_summary(args, base, head, rows, exit_code):
     masks = mask_description({**base, **head})
     if masks:
         header.append("- synthetic masks: " + "; ".join(masks))
+    header += [f"- {note}" for note in args.note]
     header.append("")
     sections = [
         "\n".join(header),
@@ -251,7 +253,15 @@ def parse_args(argv):
     parser.add_argument("--summary", help="write Markdown report to this file")
     parser.add_argument("--base-label", default=None, help="label for base run")
     parser.add_argument("--head-label", default=None, help="label for head run")
+    parser.add_argument(
+        "--note",
+        action="append",
+        default=[],
+        help="additional line for the report header, may be given multiple "
+        "times (empty values are ignored)",
+    )
     args = parser.parse_args(argv)
+    args.note = [note.strip() for note in args.note if note.strip()]
     if args.base_label is None:
         args.base_label = args.base
     if args.head_label is None:
@@ -271,11 +281,13 @@ def main(argv=None):
         )
         print(message)
         if args.summary:
+            header = [f"- base: {args.base_label}", f"- head: {args.head_label}"]
+            header += [f"- {note}" for note in args.note]
             with open(args.summary, "w") as fh:
                 fh.write(
-                    f"## Performance benchmark comparison\n\n"
-                    f"- base: {args.base_label}\n- head: {args.head_label}\n\n"
-                    f"**ERROR**: {message}\n"
+                    "## Performance benchmark comparison\n\n"
+                    + "\n".join(header)
+                    + f"\n\n**ERROR**: {message}\n"
                 )
         return EXIT_ERROR
 
@@ -287,6 +299,8 @@ def main(argv=None):
 
     print(f"base: {args.base_label}")
     print(f"head: {args.head_label}")
+    for note in args.note:
+        print(note)
     print()
     print(comparison_table(rows))
     print()

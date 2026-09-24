@@ -6,6 +6,12 @@ name: performance benchmarks
 # comparison table is written to the job's Summary tab and to the job log.
 # No PR comment is posted, since the GITHUB_TOKEN of pull-requests from forks
 # is not allowed to do that.
+#
+# The benchmark runs are skipped (and the job succeeds) when a pull-request
+# does not change the package code (`PACKAGE_PATHS` below), since base and
+# head would then run identical metric code. Manual runs (workflow_dispatch)
+# always benchmark and can compare two arbitrary refs via `base_ref` and
+# `head_ref`.
 
 on:
   pull_request:
@@ -15,6 +21,13 @@ on:
         description: "git ref (branch, tag or sha) to compare against"
         required: false
         default: "master"
+      head_ref:
+        description: >-
+          git ref (branch, tag or sha) to benchmark as "head"; empty = the ref
+          the workflow is run from. The benchmark files are always taken from
+          the ref the workflow is run from.
+        required: false
+        default: ""
       max_slowdown:
         description: "maximum allowed head/base ratio of the median run-time"
         required: false
@@ -38,6 +51,8 @@ env:
   # the PR is used
   BASE_REF: ${{ github.event.pull_request.base.sha || inputs.base_ref || 'master' }}
   MAX_SLOWDOWN: ${{ inputs.max_slowdown || '1.5' }}
+  # paths whose change between base and head triggers the benchmark runs
+  PACKAGE_PATHS: cloudmetrics pyproject.toml
   PYTEST_BENCHMARK_ARGS: >-
     --benchmark-only
     --benchmark-min-rounds=5
@@ -58,73 +73,172 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Resolve base commit
-        id: base
+      - name: Resolve base and head commits
+        id: refs
         # user-controlled values (branch names, inputs) are passed through the
         # environment rather than expanded into the script
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_REF: ${{ inputs.head_ref }}
+          HEAD_WORKTREE: ${{ runner.temp }}/cloudmetrics-head
         run: |
-          if ! git rev-parse --verify --quiet "${BASE_REF}^{commit}" > /dev/null; then
-            git fetch origin "${BASE_REF}"
-          fi
-          base_sha=$(git rev-parse --verify --quiet "origin/${BASE_REF}^{commit}" \
-            || git rev-parse --verify "${BASE_REF}^{commit}")
-          echo "base ref: ${BASE_REF} -> ${base_sha}"
-          echo "head sha: ${GITHUB_SHA}"
-          {
-            echo "sha=${base_sha}"
-            echo "label=\`${BASE_REF}\` @ ${base_sha}"
-            if [ -n "${PR_NUMBER}" ]; then
-              echo "head_label=PR #${PR_NUMBER} \`${PR_HEAD_REF}\` @ ${PR_HEAD_SHA} (merge commit ${GITHUB_SHA})"
-            else
-              echo "head_label=\`${GITHUB_REF_NAME}\` @ ${GITHUB_SHA}"
+          # resolve a branch name, tag or sha to a commit sha (fetching it if
+          # it is not available locally), preferring the branch at `origin`
+          resolve() {
+            if ! git rev-parse --verify --quiet "$1^{commit}" > /dev/null; then
+              git fetch origin "$1"
             fi
+            git rev-parse --verify --quiet "origin/$1^{commit}" \
+              || git rev-parse --verify "$1^{commit}"
+          }
+          base_sha=$(resolve "${BASE_REF}")
+          echo "base ref: ${BASE_REF} -> ${base_sha}"
+          if [ -n "${HEAD_REF}" ]; then
+            # manual A/B comparison: `head_ref` is checked out into a second
+            # worktree and benchmarked with the benchmark files of this checkout
+            head_sha=$(resolve "${HEAD_REF}")
+            head_dir=${HEAD_WORKTREE}
+            head_label="\`${HEAD_REF}\` @ ${head_sha} (benchmark files from \`${GITHUB_REF_NAME}\` @ ${GITHUB_SHA})"
+          else
+            head_sha=${GITHUB_SHA}
+            head_dir=${GITHUB_WORKSPACE}
+            if [ -n "${PR_NUMBER}" ]; then
+              head_label="PR #${PR_NUMBER} \`${PR_HEAD_REF}\` @ ${PR_HEAD_SHA} (merge commit ${GITHUB_SHA})"
+            else
+              head_label="\`${GITHUB_REF_NAME}\` @ ${GITHUB_SHA}"
+            fi
+          fi
+          echo "head sha: ${head_sha} (installed from ${head_dir})"
+          {
+            echo "base_sha=${base_sha}"
+            echo "base_label=\`${BASE_REF}\` @ ${base_sha}"
+            echo "head_sha=${head_sha}"
+            echo "head_dir=${head_dir}"
+            echo "head_label=${head_label}"
           } >> "$GITHUB_OUTPUT"
           mkdir -p "${RESULTS_DIR}"
 
+      # On a pull-request that only touches e.g. docs, CI or the benchmarks
+      # themselves, base and head would run identical metric code, so the
+      # benchmark runs are skipped. Manual runs are an explicit request and
+      # always benchmark.
+      - name: Detect changes to the package code
+        id: changes
+        env:
+          BASE_SHA: ${{ steps.refs.outputs.base_sha }}
+          HEAD_SHA: ${{ steps.refs.outputs.head_sha }}
+          FORCE: ${{ github.event_name == 'workflow_dispatch' }}
+        run: |
+          # shellcheck disable=SC2086  # PACKAGE_PATHS is a list
+          if git diff --quiet "${BASE_SHA}" "${HEAD_SHA}" -- ${PACKAGE_PATHS}; then
+            changed=false
+          else
+            rc=$?
+            [ "${rc}" -eq 1 ] || exit "${rc}"
+            changed=true
+          fi
+          run_benchmarks=${changed}
+          note=""
+          if [ "${changed}" = false ]; then
+            echo "no changes under ${PACKAGE_PATHS} between ${BASE_SHA} and ${HEAD_SHA}"
+            if [ "${FORCE}" = true ]; then
+              echo "running the benchmarks anyway (manual run)"
+              run_benchmarks=true
+              note="the package code (${PACKAGE_PATHS}) is identical on base and head, the benchmarks were run anyway because the workflow was started manually"
+            else
+              echo "skipping the benchmark runs"
+            fi
+          else
+            git diff --stat "${BASE_SHA}" "${HEAD_SHA}" -- ${PACKAGE_PATHS}
+          fi
+          {
+            echo "package_changed=${changed}"
+            echo "run_benchmarks=${run_benchmarks}"
+            echo "note=${note}"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Install package and benchmark dependencies
+        if: steps.changes.outputs.run_benchmarks == 'true'
         run: |
           python -m pip install --upgrade pip
-          # TODO: drop the numpy pin once the use of the removed `np.trapz`
-          # has been replaced by `np.trapezoid` (fails with numpy>=2.4)
-          pip install ".[test]" pytest-benchmark "numpy<2.4"
+          pip install ".[test]" pytest-benchmark
 
-      - name: Check out base commit
+      - name: Check out base (and head) commits
+        if: steps.changes.outputs.run_benchmarks == 'true'
         env:
-          BASE_SHA: ${{ steps.base.outputs.sha }}
+          BASE_SHA: ${{ steps.refs.outputs.base_sha }}
+          HEAD_SHA: ${{ steps.refs.outputs.head_sha }}
+          HEAD_DIR: ${{ steps.refs.outputs.head_dir }}
         run: |
           git worktree add --detach "${BASE_DIR}" "${BASE_SHA}"
           git -C "${BASE_DIR}" log --oneline -1
+          if [ "${HEAD_DIR}" != "${GITHUB_WORKSPACE}" ]; then
+            git worktree add --detach "${HEAD_DIR}" "${HEAD_SHA}"
+            git -C "${HEAD_DIR}" log --oneline -1
+          fi
+
+      # `np.trapz` was removed in numpy 2.4 (replaced by `np.trapezoid`). If
+      # the installed numpy has no `trapz` but one side still calls it (e.g. a
+      # base commit older than the fix), `numpy<2.4` is installed before BOTH
+      # benchmark runs, so that the two sides are still measured against the
+      # same numpy version. The note ends up in the summary header.
+      - name: Check numpy compatibility of both sides
+        id: numpy
+        if: steps.changes.outputs.run_benchmarks == 'true'
+        env:
+          HEAD_DIR: ${{ steps.refs.outputs.head_dir }}
+        run: |
+          uses_trapz=""
+          for side in base head; do
+            dir=${BASE_DIR}; [ "${side}" = head ] && dir=${HEAD_DIR}
+            if git -C "${dir}" grep -q -F "np.trapz(" -- cloudmetrics; then
+              uses_trapz="${uses_trapz:+${uses_trapz} and }${side}"
+            fi
+          done
+          why=""
+          if [ -n "${uses_trapz}" ] && ! python -c "import numpy; numpy.trapz" 2> /dev/null; then
+            unpinned=$(python -c "import numpy; print(numpy.__version__)")
+            echo "::warning::the ${uses_trapz} code still uses np.trapz, which numpy ${unpinned} lacks -> installing numpy<2.4 for both benchmark runs"
+            pip install "numpy<2.4"
+            why=" (pinned to <2.4 for both runs: the ${uses_trapz} code still uses \`np.trapz\`, which numpy ${unpinned} lacks)"
+          fi
+          version=$(python -c "import numpy; print(numpy.__version__)")
+          echo "numpy ${version}${why}"
+          echo "note=numpy: ${version}${why}" >> "$GITHUB_OUTPUT"
 
       # The base is installed into the same environment (rather than only put
       # on PYTHONPATH) because the version file `cloudmetrics/_version.py` is
       # generated by setuptools_scm at install time and does not exist in a
       # bare checkout. `--no-deps` keeps the dependencies of the head install,
       # so both sides run against identical versions of numpy, scipy, etc.
-      # The benchmark code of the HEAD is used for both sides, run with the
-      # `pytest` entry point (not `python -m pytest`, which would put the
-      # current directory and thereby the head source tree on `sys.path`).
+      # The benchmark code of this checkout is used for both sides, run with
+      # the `pytest` entry point (not `python -m pytest`, which would put the
+      # current directory and thereby this source tree on `sys.path`).
       - name: Benchmark base
+        if: steps.changes.outputs.run_benchmarks == 'true'
         run: |
           pip install --no-deps --force-reinstall "${BASE_DIR}"
           pytest benchmarks ${PYTEST_BENCHMARK_ARGS} \
             --benchmark-json="${RESULTS_DIR}/base.json"
 
       - name: Benchmark head
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.changes.outputs.run_benchmarks == 'true' }}
+        env:
+          HEAD_DIR: ${{ steps.refs.outputs.head_dir }}
         run: |
-          pip install --no-deps --force-reinstall .
+          pip install --no-deps --force-reinstall "${HEAD_DIR}"
           pytest benchmarks ${PYTEST_BENCHMARK_ARGS} \
             --benchmark-json="${RESULTS_DIR}/head.json"
 
       - name: Compare head against base
-        if: always()
+        if: ${{ always() && steps.changes.outputs.run_benchmarks == 'true' }}
         env:
-          BASE_LABEL: ${{ steps.base.outputs.label }}
-          HEAD_LABEL: ${{ steps.base.outputs.head_label }}
+          BASE_LABEL: ${{ steps.refs.outputs.base_label }}
+          HEAD_LABEL: ${{ steps.refs.outputs.head_label }}
+          NUMPY_NOTE: ${{ steps.numpy.outputs.note }}
+          CHANGES_NOTE: ${{ steps.changes.outputs.note }}
         run: |
           python benchmarks/compare.py \
             --base "${RESULTS_DIR}/base.json" \
@@ -132,15 +246,37 @@ jobs:
             --max-slowdown "${MAX_SLOWDOWN}" \
             --base-label "${BASE_LABEL}" \
             --head-label "${HEAD_LABEL}" \
+            --note "${NUMPY_NOTE}" \
+            --note "${CHANGES_NOTE}" \
             --summary "${RESULTS_DIR}/summary.md"
 
       - name: Write job summary
         if: always()
+        env:
+          RUN_BENCHMARKS: ${{ steps.changes.outputs.run_benchmarks }}
+          BASE_LABEL: ${{ steps.refs.outputs.base_label }}
+          HEAD_LABEL: ${{ steps.refs.outputs.head_label }}
         run: |
-          if [ -f "${RESULTS_DIR}/summary.md" ]; then
-            cat "${RESULTS_DIR}/summary.md" >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "## Performance benchmark comparison" >> "$GITHUB_STEP_SUMMARY"
-            echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "No comparison summary was produced, see the job log." >> "$GITHUB_STEP_SUMMARY"
-          fi
+          {
+            if [ "${RUN_BENCHMARKS}" = false ]; then
+              echo "## Performance benchmark comparison"
+              echo ""
+              echo "- base: ${BASE_LABEL}"
+              echo "- head: ${HEAD_LABEL}"
+              echo ""
+              echo "**SKIPPED**: the package code is unchanged between base and head," \
+                "both sides would run identical metric code. Paths considered:"
+              echo ""
+              for path in ${PACKAGE_PATHS}; do
+                echo "- \`${path}\`"
+              done
+              echo ""
+              echo "Start the workflow manually (workflow_dispatch) to run the benchmarks anyway."
+            elif [ -f "${RESULTS_DIR}/summary.md" ]; then
+              cat "${RESULTS_DIR}/summary.md"
+            else
+              echo "## Performance benchmark comparison"
+              echo ""
+              echo "No comparison summary was produced, see the job log."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
