@@ -7,6 +7,9 @@
 - update pre-commit hooks and related github action to latest versions
   [\#86](https://github.com/cloudsci/cloudmetrics/pull/86) Hauke Schulz
   (@observingClouds)
+- switch CI to [uv](https://docs.astral.sh/uv/) with a committed `uv.lock`,
+  test on python 3.10-3.14 and add Dependabot config to keep the lockfile,
+  GitHub Actions and pre-commit hooks up to date Hauke Schulz (@observingClouds)
 
 ## [v0.3.0](https://github.com/cloudsci/cloudmetrics/tree/v0.3.0)
 
