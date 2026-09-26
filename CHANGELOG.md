@@ -10,6 +10,8 @@
 - add performance benchmarks (`benchmarks/`) and a github action that
   compares the run-time of the mask metrics on a pull-request against its base
   branch and fails on regressions Hauke Schulz (@observingClouds)
+- replace removed `np.trapz` with `np.trapezoid` (numpy>=2.4 compatibility)
+  Hauke Schulz (@observingClouds)
 
 ## [v0.3.0](https://github.com/cloudsci/cloudmetrics/tree/v0.3.0)
 
